@@ -1,20 +1,11 @@
 ﻿using BepInEx;
 using HarmonyLib;
-using Invector.vCharacterController;
-using System.Collections.Concurrent;
-using System;
+using Invector;
+using Rewired;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
-using System.Reflection.Emit;
-using System.Text;
-using System.Threading.Tasks;
 using UnityEngine;
-using BepInEx.Logging;
-using Invector.vItemManager;
-using System.Collections;
-using Invector;
-using EZCameraShake;
 
 namespace CombatMod
 {
@@ -22,7 +13,7 @@ namespace CombatMod
     {
         internal const string GUID = "hol.vaproxy.combattweaks";
         internal const string Name = "Combat Tweaks";
-        internal const string Version = "1.0.0";
+        internal const string Version = "1.0.1";
     }
 
     [BepInPlugin(PluginInfo.GUID, PluginInfo.Name, PluginInfo.Version)]
@@ -52,8 +43,19 @@ namespace CombatMod
 
             MethodInfo chargoPatch = AccessTools.Method(typeof(DroneChargePatch), "ChargoPatch");
 
-            harmony.PatchAll();
-            harmony.Patch(healOriginal,new HarmonyMethod(healPatch));
+            MethodInfo updateOriginal = AccessTools.Method(typeof(Inventory), "Update");
+
+            MethodInfo updatePrefix = AccessTools.Method(typeof(ParryTimePatch), "UpdatePrefix");
+
+            MethodInfo fixedUpdateOriginal = AccessTools.Method(typeof(Inventory), "FixedUpdate");
+
+            MethodInfo fixedUpdatePrefix = AccessTools.Method(typeof(ParryTimePatch), "FixedUpdatePrefix");
+
+
+            harmony.Patch(updateOriginal, new HarmonyMethod(updatePrefix));
+            harmony.Patch(fixedUpdateOriginal, new HarmonyMethod(fixedUpdatePrefix));
+
+            harmony.Patch(healOriginal, new HarmonyMethod(healPatch));
             harmony.Patch(crashOriginal, new HarmonyMethod(crashPatch));
             harmony.Patch(crashOriginal, null, new HarmonyMethod(crashPatchPost));
 
@@ -63,23 +65,42 @@ namespace CombatMod
         }
     }
 
-    [HarmonyPatch(typeof(Inventory))]
-    [HarmonyPatch("FixedUpdate")]
     public class ParryTimePatch
     {
-        static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> instructions)
+        public static int parryWindow;
+        internal static float timeWindow = 0.75f;
+        internal static List<float> parryPressTimes = new List<float>();
+        public static void UpdatePrefix(Inventory __instance)
         {
-            var codes = new List<CodeInstruction>(instructions);
+            parryWindow = 7;
 
-            for (int i = 0; i < codes.Count; i++)
+            float currentTime = Time.time;
+
+            parryPressTimes.RemoveAll(time => currentTime - time > timeWindow);
+
+            if (ReInput.players.GetPlayer("Player0").GetButtonDown("Parry") && !__instance.enemyride)
             {
-                if (codes[i].opcode == OpCodes.Ldc_I4_S && codes[i].operand.Equals((sbyte)15))
-                {
+                parryPressTimes.Add(currentTime);
+                __instance.AttackHold = 0;
+            }
+            int buttonPressCount = parryPressTimes.Count(time => currentTime - time <= timeWindow);
 
-                    codes[i].opcode = OpCodes.Ldc_I4;
-                    codes[i].operand = 7;
-                }
-                yield return codes[i];
+
+            if (__instance.AttackHold < buttonPressCount)
+            {
+                __instance.AttackHold = buttonPressCount;
+            }
+            if (buttonPressCount > 1)
+            {
+                parryWindow -= buttonPressCount;
+            }
+        }
+
+        public static void FixedUpdatePrefix(Inventory __instance)
+        {
+            if (__instance.AttackHold > parryWindow && __instance.AttackHold < 15)
+            {
+                __instance.AttackHold = 100;
             }
         }
     }
@@ -114,26 +135,21 @@ namespace CombatMod
         internal static int canCharge = 1;
         public static void OnReceiveDamagePatch(vDamage damage)
         {
-            Debug.Log("ORDP Pre!");
             if (damage.damageType == "drone")
             {
                 canCharge = 0;
-                Debug.Log("(prefix ORDP) canCharge is..."+canCharge);
             }
         }
         public static void OnReceiveDamagePatchPost(vDamage damage)
         {
-            Debug.Log("ORDP Post!");
             if (damage.damageType == "drone")
             {
                 canCharge = 1;
-                Debug.Log("(postfix ORDP) canCharge is..." + canCharge);
             }
         }
 
         public static bool ChargoPatch()
         {
-            Debug.Log("(chargo) canCharge is..." + canCharge);
             if (canCharge == 1)
             {
                 return true;
